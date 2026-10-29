@@ -1,0 +1,11 @@
+# Prometheus config for Docker Compose. Use the service DNS name on the
+# Compose network; localhost inside this container is not the Flask container.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: cybersentinel
+    static_configs:
+      - targets: ["flask-app:5000"]
+    metrics_path: /metrics

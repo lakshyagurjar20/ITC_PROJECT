@@ -1,0 +1,106 @@
+# docker-compose.yml
+# Orchestrates three services:
+#   flask-app   â€” CyberSentinel demo app + ML detector
+#   prometheus  â€” Metrics collection and storage
+#   grafana     â€” Dashboard visualisation
+#
+# All three share a private Docker network so they can talk to each other
+# by service name (e.g., prometheus can reach flask-app:5000).
+#
+# Prerequisites:
+#   - Docker Desktop running on Windows
+#   - .env file exists (copy from .env.example and fill in HMAC_SECRET_KEY)
+#
+# Run:
+#   docker compose up --build
+#
+# URLs after startup:
+#   Flask app   : http://localhost:5000
+#   Prometheus  : http://localhost:9090
+#   Grafana     : http://localhost:3000  (admin / admin)
+
+services:
+
+  # -----------------------------------------------------------------------
+  # Flask application + ML anomaly detector
+  # -----------------------------------------------------------------------
+  flask-app:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env                      # loads HMAC_SECRET_KEY, DEMO_USERNAME, etc.
+    environment:
+      FLASK_DEBUG: "0"            # disable reloader in Docker (overrides .env)
+      CS_STARTUP_DELAY: "15"      # extra time before first ML scrape
+    networks:
+      - monitoring
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------------------
+  # Prometheus â€” scrapes /metrics every 15 s
+  # -----------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.docker.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      flask-app:
+        condition: service_healthy
+
+  # -----------------------------------------------------------------------
+  # Grafana â€” visualises Prometheus data
+  # -----------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cybersentinel.json
+    volumes:
+      # Provisioning: auto-configure datasource + dashboard on first boot
+      - ./grafana/provisioning/docker:/etc/grafana/provisioning:ro
+      # Dashboard JSON files
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Persistent Grafana data (annotations, user prefs, etc.)
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+# -----------------------------------------------------------------------
+# Named volumes for persistent storage
+# -----------------------------------------------------------------------
+volumes:
+  prometheus_data:
+  grafana_data:
+
+# -----------------------------------------------------------------------
+# Internal network â€” services communicate by name, not by IP
+# -----------------------------------------------------------------------
+networks:
+  monitoring:
+    driver: bridge
